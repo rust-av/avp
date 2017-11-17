@@ -3,6 +3,10 @@ name = "avp"
 version = "0.1.0"
 authors = ["Luca Barbato <lu_zero@gentoo.org>"]
 description = "Simple multimedia player"
+license = "MIT"
+repository = "https://github.com/rust-av/avp"
+readme = "README.md"
+keywords = ["player","rust-av","sdl2"]
 
 [dependencies]
 clap = "2.24.1"
