@@ -16,7 +16,7 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::keyboard::Keycode;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
-use sdl2::Sdl;
+use sdl2::EventPump;
 
 use format::demuxer::*;
 use data::frame::*;
@@ -26,7 +26,7 @@ use matroska::demuxer::MkvDemuxer;
 
 struct SDLPlayer {
     canvas: Canvas<Window>,
-    context: Sdl
+    event_pump: EventPump,
 }
 
 impl SDLPlayer {
@@ -41,9 +41,11 @@ impl SDLPlayer {
             .unwrap();
         let canvas = window.into_canvas().build().unwrap();
 
+        let event_pump = sdl_context.event_pump().unwrap();
+
         SDLPlayer {
             canvas: canvas,
-            context: sdl_context,
+            event_pump: event_pump,
         }
     }
 
@@ -71,23 +73,20 @@ impl SDLPlayer {
         self.canvas.present();
     }
 
-    fn eventloop(&mut self) {
+    fn eventloop(&mut self) -> bool {
         use sdl2::event::Event as SDLEvent;
 
-        let mut event_pump = self.context.event_pump().unwrap();
-
-        'running: loop {
-            for event in event_pump.poll_iter() {
-                match event {
-                    SDLEvent::Quit {..} |
-                        SDLEvent::KeyDown { keycode: Some(Keycode::Escape), .. } => {
-                        break 'running
-                    },
-                    _ => {}
-                }
+        for event in self.event_pump.poll_iter() {
+            match event {
+                SDLEvent::Quit {..} |
+                    SDLEvent::KeyDown { keycode: Some(Keycode::Escape), .. } => {
+                        return true;
+                },
+                _ => {}
             }
-            // The rest of the game loop goes here...
         }
+
+        false
     }
 }
 
@@ -213,9 +212,10 @@ fn main() {
             }
             p.as_mut().unwrap().blit(&f);
             thread::sleep(time::Duration::from_millis(200));
+            if p.as_mut().unwrap().eventloop() {
+                break;
+            }
         }
-
-        p.as_mut().unwrap().eventloop();
     } else {
 
     }
