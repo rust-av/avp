@@ -14,80 +14,85 @@ use clap::Arg;
 use sdl2::pixels::PixelFormatEnum;
 // use sdl2::rect::Rect;
 use sdl2::keyboard::Keycode;
+use sdl2::render::Canvas;
+use sdl2::video::Window;
+use sdl2::Sdl;
 
 use format::demuxer::*;
-use format::stream::*;
-use data::packet::*;
+use data::frame::*;
 
 // use matroska::demuxer::MKV_DESC;
 use matroska::demuxer::MkvDemuxer;
 
-fn playback() {
-    use sdl2::event::Event as SDLEvent;
-    let sdl_context = sdl2::init().unwrap();
-    let video_subsystem = sdl_context.video().unwrap();
-    let w = 800usize;
-    let h = 600usize;
+struct SDLPlayer {
+    canvas: Canvas<Window>,
+    context: Sdl
+}
 
-    let window = video_subsystem.window("rust-sdl2 demo: Video", w as u32, h as u32)
-        .position_centered()
-        .opengl()
-        .build()
-        .unwrap();
+impl SDLPlayer {
+    fn new(w: usize, h: usize, name: &str) -> Self {
+        let sdl_context = sdl2::init().unwrap();
+        let video_subsystem = sdl_context.video().unwrap();
 
-    let mut canvas = window.into_canvas().build().unwrap();
-    let texture_creator = canvas.texture_creator();
+        let window = video_subsystem.window(name, w as u32, h as u32)
+            .position_centered()
+            .opengl()
+            .build()
+            .unwrap();
+        let canvas = window.into_canvas().build().unwrap();
 
-    let mut texture = texture_creator.create_texture_streaming(
-        PixelFormatEnum::IYUV, w as u32, h as u32).unwrap();
-    // Create a U-V gradient
-    texture.with_lock(None, |buffer: &mut [u8], pitch: usize| {
-        // `pitch` is the width of the Y component
-        // The U and V components are half the width and height of Y
-
-        // Set Y (constant)
-        for y in 0..h {
-            for x in 0..w {
-                let offset = y*pitch + x;
-                buffer[offset] = 128;
-            }
+        SDLPlayer {
+            canvas: canvas,
+            context: sdl_context,
         }
+    }
 
-        let y_size = pitch*h;
+    fn blit(&mut self, frame: &Frame) {
+        let (w, h) = self.canvas.window().size();
+        let texture_creator = self.canvas.texture_creator();
 
-        // Set U and V (X and Y)
-        for y in 0..h/2 {
-            for x in 0..w/2 {
-                let u_offset = y_size + y*pitch/2 + x;
-                let v_offset = y_size + (pitch/2 * h/2) + y*pitch/2 + x;
-                buffer[u_offset] = (x*2) as u8;
-                buffer[v_offset] = (y*2) as u8;
+        let mut texture = texture_creator.create_texture_streaming(
+            PixelFormatEnum::IYUV, w, h).unwrap();
+
+        let y_plane = frame.buf.as_slice(0).unwrap();
+        let y_stride = frame.buf.linesize(0).unwrap();
+        let u_plane = frame.buf.as_slice(1).unwrap();
+        let u_stride = frame.buf.linesize(1).unwrap();
+        let v_plane = frame.buf.as_slice(2).unwrap();
+        let v_stride = frame.buf.linesize(2).unwrap();
+
+        texture.update_yuv(None,
+                           y_plane, y_stride,
+                           u_plane, u_stride,
+                           v_plane, v_stride);
+
+        self.canvas.clear();
+        self.canvas.copy(&texture, None, None).unwrap();
+        self.canvas.present();
+    }
+
+    fn eventloop(&mut self) {
+        use sdl2::event::Event as SDLEvent;
+
+        let mut event_pump = self.context.event_pump().unwrap();
+
+        'running: loop {
+            for event in event_pump.poll_iter() {
+                match event {
+                    SDLEvent::Quit {..} |
+                        SDLEvent::KeyDown { keycode: Some(Keycode::Escape), .. } => {
+                        break 'running
+                    },
+                    _ => {}
+                }
             }
+            // The rest of the game loop goes here...
         }
-    }).unwrap();
-
-    canvas.clear();
-    canvas.copy(&texture, None, None).unwrap();
-    canvas.present();
-
-    let mut event_pump = sdl_context.event_pump().unwrap();
-
-    'running: loop {
-        for event in event_pump.poll_iter() {
-            match event {
-                SDLEvent::Quit {..} | SDLEvent::KeyDown { keycode: Some(Keycode::Escape), .. } => {
-                    break 'running
-                },
-                _ => {}
-            }
-        }
-        // The rest of the game loop goes here...
     }
 }
 
 use std::fs::File;
 use format::buffer::AccReader;
-use std::io::BufReader;
 
 use codec::decoder::Context as DecContext;
 use codec::decoder::Codecs as DecCodecs;
@@ -108,7 +113,7 @@ impl PlaybackContext {
     fn from_path(s: &str) -> Self {
         let r = File::open(s).unwrap();
         // Context::from_read(demuxers, r).unwrap();
-        let ar = AccReader::with_capacity(4 * 1024, BufReader::new(r));
+        let ar = AccReader::with_capacity(4 * 1024, r);
 
         let mut c = Context::new(Box::new(MkvDemuxer::new()), Box::new(ar));
 
@@ -135,31 +140,40 @@ impl PlaybackContext {
         }
     }
 
-    fn decode_one(&mut self) -> Option<ArcFrame> {
+    fn decode_one(&mut self) -> Result<Option<ArcFrame>, String> {
         let ref mut c = self.demuxer;
         let ref mut decs = self.decoders;
-        if let Ok(event) = c.read_event() {
-            match event {
+        match c.read_event() {
+            Ok(event) => match event {
                 Event::NewPacket(pkt) => {
                     if let Some(dec) = decs.get_mut(&pkt.stream_index) {
                         println!("Decoding packet at index {}", pkt.stream_index);
                         dec.send_packet(&pkt);
-                        dec.receive_frame().ok()
+                        Ok(dec.receive_frame().ok())
                     } else {
                         println!("Skipping packet at index {}", pkt.stream_index);
-                        None
+                        Ok(None)
                     }
                 },
                 _ => {
                     println!("Unsupported event {:?}", event);
                     unimplemented!();
                 }
+            },
+            Err(err) => {
+                println!("No more events {:?}", err);
+                Err("TBD".to_owned())
             }
-        } else {
-            None
         }
     }
 }
+
+use std::thread;
+use std::sync::mpsc;
+
+use std::time;
+
+use data::frame::MediaKind;
 
 fn main() {
     let i = Arg::with_name("input")
@@ -176,11 +190,32 @@ fn main() {
     println!("{:?}", m);
 
     if let Some(input) = m.value_of("input") {
-        let mut ctx = PlaybackContext::from_path(input);
-        for i in 0..5 {
-            println!("Decoded {:?}", ctx.decode_one());
+        let (s, r) = mpsc::channel();
+        let input_path = input.to_owned();
+        thread::spawn(move || {
+            let mut ctx = PlaybackContext::from_path(&input_path);
+            while let Ok(data) = ctx.decode_one() {
+                if let Some(frame) = data {
+                    println!("Decoded {:?}", frame);
+                    s.send(frame);
+                }
+            }
+        });
+
+        let mut p  = None;
+        while let Ok(f) = r.recv() {
+            println!("Got {:?}", f);
+            if p.is_none() {
+                if let MediaKind::Video(ref fmt) = f.kind {
+                    // TODO: support resizing
+                    p = Some(SDLPlayer::new(fmt.width, fmt.height, "avp"))
+                }
+            }
+            p.as_mut().unwrap().blit(&f);
+            thread::sleep(time::Duration::from_millis(200));
         }
-        // playback(ctx);
+
+        p.as_mut().unwrap().eventloop();
     } else {
 
     }
