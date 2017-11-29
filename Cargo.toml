@@ -15,4 +15,5 @@ av-data = { version = "0.1.0", path = "../rust-av/data" }
 av-codec = { version = "0.1.0", path = "../rust-av/codec" }
 av-format = { version = "0.1.0", path = "../rust-av/format" }
 libvpx = { version = "0.1.0", path = "../vpx-rs", features=["codec-trait"] }
+libopus = { version = "0.1.0", path = "../opus-rs", features=["codec-trait"] }
 matroska = { version = "0.1.0", path = "../matroska" }

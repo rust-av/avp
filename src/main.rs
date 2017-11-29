@@ -6,6 +6,7 @@ extern crate av_codec as codec;
 extern crate av_format as format;
 extern crate matroska;
 extern crate libvpx as vpx;
+extern crate libopus as opus;
 
 extern crate sdl2;
 
@@ -66,7 +67,7 @@ impl SDLPlayer {
         texture.update_yuv(None,
                            y_plane, y_stride,
                            u_plane, u_stride,
-                           v_plane, v_stride);
+                           v_plane, v_stride).unwrap();
 
         self.canvas.clear();
         self.canvas.copy(&texture, None, None).unwrap();
@@ -82,30 +83,34 @@ impl SDLPlayer {
                     SDLEvent::KeyDown { keycode: Some(Keycode::Escape), .. } => {
                         return true;
                 },
-                _ => {}
+                _ => {
+                    return false;
+                }
             }
         }
-
         false
     }
 }
 
 use std::fs::File;
 use format::buffer::AccReader;
+use data::params;
 
 use codec::decoder::Context as DecContext;
 use codec::decoder::Codecs as DecCodecs;
 use codec::common::CodecList;
 use data::frame::ArcFrame;
 
+
 use vpx::decoder::VP9_DESCR;
-// use opus::decoder::OPUS_DESCR;
+use opus::decoder::OPUS_DESCR;
 
 use std::collections::HashMap;
 
 struct PlaybackContext {
     decoders: HashMap<isize, DecContext>,
     demuxer: Context,
+    video: Option<params::VideoInfo>,
 }
 
 impl PlaybackContext {
@@ -118,10 +123,12 @@ impl PlaybackContext {
 
         c.read_headers().expect("Cannot parse the format headers");
 
-        let decoders = DecCodecs::from_list(&[VP9_DESCR]);
+        let decoders = DecCodecs::from_list(&[VP9_DESCR, OPUS_DESCR]);
 
+        let mut video_info = None;
         let mut decs: HashMap<isize, DecContext> = HashMap::with_capacity(2);
         for st in &c.info.streams {
+            // TODO stream selection
             if let Some(ref codec_id) = st.params.codec_id {
                 if let Some(mut ctx) = DecContext::by_name(&decoders, codec_id) {
                     if let Some(ref extradata) = st.params.extradata {
@@ -129,13 +136,17 @@ impl PlaybackContext {
                     }
                     ctx.configure().expect("Codec configure failed");
                     decs.insert(st.index as isize, ctx);
+                    if let Some(params::MediaKind::Video(ref info)) = st.params.kind {
+                        video_info = Some(info.clone());
+                    }
                 }
             }
         }
 
         PlaybackContext {
             decoders: decs,
-            demuxer: c
+            demuxer: c,
+            video: video_info,
         }
     }
 
@@ -147,7 +158,7 @@ impl PlaybackContext {
                 Event::NewPacket(pkt) => {
                     if let Some(dec) = decs.get_mut(&pkt.stream_index) {
                         println!("Decoding packet at index {}", pkt.stream_index);
-                        dec.send_packet(&pkt);
+                        dec.send_packet(&pkt).unwrap(); // TODO report error
                         Ok(dec.receive_frame().ok())
                     } else {
                         println!("Skipping packet at index {}", pkt.stream_index);
@@ -169,7 +180,6 @@ impl PlaybackContext {
 
 use std::thread;
 use std::sync::mpsc;
-
 use std::time;
 
 use data::frame::MediaKind;
@@ -186,36 +196,47 @@ fn main() {
         .arg(i)
         .get_matches();
 
-    println!("{:?}", m);
-
     if let Some(input) = m.value_of("input") {
         let (s, r) = mpsc::channel();
-        let input_path = input.to_owned();
+        let mut play = PlaybackContext::from_path(input);
+        let mut p;
+
+        if let Some(ref video) = play.video {
+            p = SDLPlayer::new(video.width, video.height, "avp");
+        } else {
+            p = SDLPlayer::new(640, 480, "avp");
+        }
+
         thread::spawn(move || {
-            let mut ctx = PlaybackContext::from_path(&input_path);
-            while let Ok(data) = ctx.decode_one() {
+            while let Ok(data) = play.decode_one() {
                 if let Some(frame) = data {
                     println!("Decoded {:?}", frame);
-                    s.send(frame);
+                    s.send(frame).unwrap(); // TODO: manage the error
                 }
             }
         });
 
-        let mut p  = None;
         while let Ok(f) = r.recv() {
             println!("Got {:?}", f);
-            if p.is_none() {
-                if let MediaKind::Video(ref fmt) = f.kind {
+
+            match f.kind {
+                MediaKind::Video(_) => {
                     // TODO: support resizing
-                    p = Some(SDLPlayer::new(fmt.width, fmt.height, "avp"))
+                    // p = Some(SDLPlayer::new(fmt.width, fmt.height, "avp"))
+                    p.blit(&f);
+                },
+                MediaKind::Audio(_) => {
+                    // TODO send here just the video
                 }
             }
-            p.as_mut().unwrap().blit(&f);
+
             thread::sleep(time::Duration::from_millis(200));
-            if p.as_mut().unwrap().eventloop() {
-                break;
+            if p.eventloop() {
+                return;
             }
         }
+        // TODO: close once it finished or not?
+        while !p.eventloop() {}
     } else {
 
     }
