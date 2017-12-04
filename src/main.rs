@@ -17,7 +17,8 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::keyboard::Keycode;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
-use sdl2::EventPump;
+use sdl2::{ AudioSubsystem, VideoSubsystem, EventPump };
+use sdl2::audio::{ AudioQueue, AudioSpecDesired };
 
 use format::demuxer::*;
 use data::frame::*;
@@ -25,34 +26,38 @@ use data::frame::*;
 // use matroska::demuxer::MKV_DESC;
 use matroska::demuxer::MkvDemuxer;
 
-struct SDLPlayer {
-    canvas: Canvas<Window>,
-    event_pump: EventPump,
+fn sdl_setup() -> (AudioSubsystem, VideoSubsystem, EventPump) {
+    let sdl_context = sdl2::init().unwrap();
+    let video_subsystem = sdl_context.video().unwrap();
+    let audio_subsystem = sdl_context.audio().unwrap();
+    let event_pump = sdl_context.event_pump().unwrap();
+
+    (audio_subsystem, video_subsystem, event_pump)
 }
 
-impl SDLPlayer {
-    fn new(w: usize, h: usize, name: &str) -> Self {
-        let sdl_context = sdl2::init().unwrap();
-        let video_subsystem = sdl_context.video().unwrap();
+trait NewCanvas {
+    fn new_canvas(&self, w: usize, h: usize, name: &str) -> Canvas<Window>;
+}
 
-        let window = video_subsystem.window(name, w as u32, h as u32)
+impl NewCanvas for VideoSubsystem {
+    fn new_canvas(&self, w: usize, h: usize, name: &str) -> Canvas<Window> {
+        let window = self.window(name, w as u32, h as u32)
             .position_centered()
             .opengl()
             .build()
             .unwrap();
-        let canvas = window.into_canvas().build().unwrap();
-
-        let event_pump = sdl_context.event_pump().unwrap();
-
-        SDLPlayer {
-            canvas: canvas,
-            event_pump: event_pump,
-        }
+        window.into_canvas().build().unwrap()
     }
+}
 
+trait Blit {
+    fn blit(&mut self, frame: &Frame);
+}
+
+impl Blit for Canvas<Window> {
     fn blit(&mut self, frame: &Frame) {
-        let (w, h) = self.canvas.window().size();
-        let texture_creator = self.canvas.texture_creator();
+        let (w, h) = self.window().size();
+        let texture_creator = self.texture_creator();
 
         let mut texture = texture_creator.create_texture_streaming(
             PixelFormatEnum::IYUV, w, h).unwrap();
@@ -69,15 +74,21 @@ impl SDLPlayer {
                            u_plane, u_stride,
                            v_plane, v_stride).unwrap();
 
-        self.canvas.clear();
-        self.canvas.copy(&texture, None, None).unwrap();
-        self.canvas.present();
+        self.clear();
+        self.copy(&texture, None, None).unwrap();
+        self.present();
     }
+}
 
+trait EventLoop {
+    fn eventloop(&mut self) -> bool;
+}
+
+impl EventLoop for EventPump {
     fn eventloop(&mut self) -> bool {
         use sdl2::event::Event as SDLEvent;
 
-        for event in self.event_pump.poll_iter() {
+        for event in self.poll_iter() {
             match event {
                 SDLEvent::Quit {..} |
                     SDLEvent::KeyDown { keycode: Some(Keycode::Escape), .. } => {
@@ -111,6 +122,7 @@ struct PlaybackContext {
     decoders: HashMap<isize, DecContext>,
     demuxer: Context,
     video: Option<params::VideoInfo>,
+    audio: Option<params::AudioInfo>,
 }
 
 impl PlaybackContext {
@@ -126,6 +138,7 @@ impl PlaybackContext {
         let decoders = DecCodecs::from_list(&[VP9_DESCR, OPUS_DESCR]);
 
         let mut video_info = None;
+        let mut audio_info = None;
         let mut decs: HashMap<isize, DecContext> = HashMap::with_capacity(2);
         for st in &c.info.streams {
             // TODO stream selection
@@ -136,8 +149,14 @@ impl PlaybackContext {
                     }
                     ctx.configure().expect("Codec configure failed");
                     decs.insert(st.index as isize, ctx);
-                    if let Some(params::MediaKind::Video(ref info)) = st.params.kind {
-                        video_info = Some(info.clone());
+                    match st.params.kind {
+                        Some(params::MediaKind::Video(ref info)) => {
+                            video_info = Some(info.clone());
+                        },
+                        Some(params::MediaKind::Audio(ref info)) => {
+                            audio_info = Some(info.clone());
+                        },
+                        _ => {},
                     }
                 }
             }
@@ -147,6 +166,7 @@ impl PlaybackContext {
             decoders: decs,
             demuxer: c,
             video: video_info,
+            audio: audio_info,
         }
     }
 
@@ -197,46 +217,74 @@ fn main() {
         .get_matches();
 
     if let Some(input) = m.value_of("input") {
+        let (audio, video, mut event) = sdl_setup();
+/*        let (v_s, v_r) = mpsc::channel();
+        let (a_s, a_r) = mpsc::channel(); */
         let (s, r) = mpsc::channel();
         let mut play = PlaybackContext::from_path(input);
-        let mut p;
 
-        if let Some(ref video) = play.video {
-            p = SDLPlayer::new(video.width, video.height, "avp");
+        let mut v_out;
+
+        // TODO: on the fly reconfiguration
+        if let Some(ref info) = play.video {
+            v_out = video.new_canvas(info.width, info.height, "avp");
         } else {
-            p = SDLPlayer::new(640, 480, "avp");
+            v_out = video.new_canvas(640, 480, "avp");
+        }
+
+        let mut a_out: Option<AudioQueue<i16>> = None;
+
+        if let Some(ref info) = play.audio {
+            let desired = AudioSpecDesired {
+                freq: Some(info.rate as i32),
+                channels: info.map.as_ref().map(|m| m.len() as u8),
+                samples: Some(960),
+            };
+            let mut a = audio.open_queue(None, &desired).unwrap();
+            println!("{:?}", a.spec()); // TODO make sure it is correct?
+            a_out = Some(a);
         }
 
         thread::spawn(move || {
             while let Ok(data) = play.decode_one() {
                 if let Some(frame) = data {
                     println!("Decoded {:?}", frame);
-                    s.send(frame).unwrap(); // TODO: manage the error
+                    match frame.kind {
+                        MediaKind::Video(_) => {
+                            s.send(frame).unwrap(); // TODO: manage the error
+                        },
+                        MediaKind::Audio(_) => {
+                            s.send(frame).unwrap();
+                        }
+                    }
                 }
             }
         });
 
-        while let Ok(f) = r.recv() {
-            println!("Got {:?}", f);
 
-            match f.kind {
+        a_out.as_mut().unwrap().resume();
+
+        while let Ok(frame) = r.recv() {
+            println!("Got {:?}", frame);
+
+            match frame.kind {
                 MediaKind::Video(_) => {
-                    // TODO: support resizing
-                    // p = Some(SDLPlayer::new(fmt.width, fmt.height, "avp"))
-                    p.blit(&f);
+                    v_out.blit(&frame);
                 },
-                MediaKind::Audio(_) => {
-                    // TODO send here just the video
+                MediaKind::Audio(ref info) => {
+                    let data = frame.buf.as_slice(0).unwrap();
+                    a_out.as_mut().unwrap().queue(&data[.. info.samples]);
                 }
             }
 
-            thread::sleep(time::Duration::from_millis(200));
-            if p.eventloop() {
+            // thread::sleep(time::Duration::from_millis(200));
+            if event.eventloop() {
                 return;
             }
         }
+
         // TODO: close once it finished or not?
-        while !p.eventloop() {}
+        while !event.eventloop() {}
     } else {
 
     }
