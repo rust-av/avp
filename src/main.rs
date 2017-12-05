@@ -18,10 +18,12 @@ use sdl2::keyboard::Keycode;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
 use sdl2::{ AudioSubsystem, VideoSubsystem, EventPump };
-use sdl2::audio::{ AudioQueue, AudioSpecDesired };
+use sdl2::audio::{ AudioCallback, AudioSpecDesired };
 
 use format::demuxer::*;
 use data::frame::*;
+use data::rational::Rational64;
+
 
 // use matroska::demuxer::MKV_DESC;
 use matroska::demuxer::MkvDemuxer;
@@ -177,7 +179,7 @@ impl PlaybackContext {
             Ok(event) => match event {
                 Event::NewPacket(pkt) => {
                     if let Some(dec) = decs.get_mut(&pkt.stream_index) {
-                        println!("Decoding packet at index {}", pkt.stream_index);
+                        // println!("Decoding packet at index {}", pkt.stream_index);
                         dec.send_packet(&pkt).unwrap(); // TODO report error
                         Ok(dec.receive_frame().ok())
                     } else {
@@ -204,6 +206,56 @@ use std::time;
 
 use data::frame::MediaKind;
 
+// TODO support floats
+struct CB {
+    r: mpsc::Receiver<ArcFrame>,
+    f: Option<ArcFrame>,
+    off: usize,
+}
+
+impl AudioCallback for CB {
+    type Channel = i16;
+
+    fn callback(&mut self, out: &mut [i16]) {
+        let mut out_len = out.len();
+        let mut off = 0;
+        while out_len > 0 {
+            if self.f.is_none() {
+                if let Ok(frame) = self.r.recv() {
+                    self.f = Some(frame);
+                    self.off = 0;
+                } else {
+                    // FIXME: ugly
+                    for i in out.iter_mut() {
+                        *i = 0;
+                    }
+                    return;
+                }
+            }
+
+            if {
+                let f = self.f.as_ref().unwrap();
+                let info = if let MediaKind::Audio(ref i) = f.kind { i } else { unreachable!() };
+                let samples = info.samples * info.map.len();
+                let data = f.buf.as_slice(0).unwrap();
+                let in_len = samples - self.off;
+                let len = out_len.min(in_len);
+
+                // println!("Copying {} from {}, {} {:?}", len, in_len, out_len, info);
+
+                &out[off .. off + len].copy_from_slice(&data[self.off .. self.off + len]);
+
+                self.off += len;
+                off += len;
+                out_len -= len;
+                in_len == len
+            } {
+                self.f = None;
+            }
+        }
+    }
+}
+
 fn main() {
     let i = Arg::with_name("input")
         .takes_value(true)
@@ -218,9 +270,9 @@ fn main() {
 
     if let Some(input) = m.value_of("input") {
         let (audio, video, mut event) = sdl_setup();
-/*        let (v_s, v_r) = mpsc::channel();
-        let (a_s, a_r) = mpsc::channel(); */
-        let (s, r) = mpsc::channel();
+        let (v_s, v_r) = mpsc::channel();
+        let (a_s, a_r) = mpsc::channel();
+        // let (s, r) = mpsc::channel();
         let mut play = PlaybackContext::from_path(input);
 
         let mut v_out;
@@ -232,16 +284,22 @@ fn main() {
             v_out = video.new_canvas(640, 480, "avp");
         }
 
-        let mut a_out: Option<AudioQueue<i16>> = None;
+        let mut a_out = None;
 
         if let Some(ref info) = play.audio {
             let desired = AudioSpecDesired {
                 freq: Some(info.rate as i32),
                 channels: info.map.as_ref().map(|m| m.len() as u8),
-                samples: Some(960),
+                samples: None,
             };
-            let mut a = audio.open_queue(None, &desired).unwrap();
-            println!("{:?}", a.spec()); // TODO make sure it is correct?
+            let mut a = audio.open_playback(None, &desired, |spec| {
+                println!("{:?}", spec); // TODO: wire in resampler when needed
+                CB {
+                    r : a_r,
+                    f : None,
+                    off : 0,
+                }
+            }).unwrap();
             a_out = Some(a);
         }
 
@@ -251,33 +309,45 @@ fn main() {
                     println!("Decoded {:?}", frame);
                     match frame.kind {
                         MediaKind::Video(_) => {
-                            s.send(frame).unwrap(); // TODO: manage the error
+                            v_s.send(frame).unwrap(); // TODO: manage the error
                         },
                         MediaKind::Audio(_) => {
-                            s.send(frame).unwrap();
+                            a_s.send(frame).unwrap();
                         }
                     }
                 }
             }
         });
 
-
         a_out.as_mut().unwrap().resume();
 
-        while let Ok(frame) = r.recv() {
-            println!("Got {:?}", frame);
+        let mut prev_pts = None;
+        let mut now = time::Instant::now();
+        while let Ok(frame) = v_r.recv() {
+            let pts = (Rational64::from_integer(frame.t.pts.unwrap() * 1000000000) *
+                frame.t.timebase.unwrap()).to_integer();
+            // println!("{:?}", pts);
+            if let Some(prev) = prev_pts {
+                let elapsed = now.elapsed();
+                if pts > prev {
+                    let sleep_time = time::Duration::new(0, (pts - prev) as u32);
+                    if elapsed < sleep_time {
+                        // println!("Sleep for {} - {:?}", pts - prev, sleep_time - elapsed);
+
+                        thread::sleep(sleep_time - elapsed);
+                    }
+                }
+            }
+            now = time::Instant::now();
+            prev_pts = Some(pts);
 
             match frame.kind {
                 MediaKind::Video(_) => {
                     v_out.blit(&frame);
                 },
-                MediaKind::Audio(ref info) => {
-                    let data = frame.buf.as_slice(0).unwrap();
-                    a_out.as_mut().unwrap().queue(&data[.. info.samples]);
-                }
+                _ => unreachable!(),
             }
 
-            // thread::sleep(time::Duration::from_millis(200));
             if event.eventloop() {
                 return;
             }
