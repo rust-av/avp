@@ -7,6 +7,7 @@ extern crate av_format as format;
 extern crate matroska;
 extern crate libvpx as vpx;
 extern crate libopus as opus;
+extern crate av_vorbis as vorbis;
 
 extern crate sdl2;
 
@@ -117,6 +118,7 @@ use data::frame::ArcFrame;
 
 use vpx::decoder::VP9_DESCR;
 use opus::decoder::OPUS_DESCR;
+use vorbis::decoder::VORBIS_DESCR;
 
 use std::collections::HashMap;
 
@@ -137,7 +139,8 @@ impl PlaybackContext {
 
         c.read_headers().expect("Cannot parse the format headers");
 
-        let decoders = DecCodecs::from_list(&[VP9_DESCR, OPUS_DESCR]);
+        let decoders = DecCodecs::from_list(&[VP9_DESCR, OPUS_DESCR,
+            VORBIS_DESCR]);
 
         let mut video_info = None;
         let mut audio_info = None;
