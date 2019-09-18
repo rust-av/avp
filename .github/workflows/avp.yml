@@ -1,0 +1,38 @@
+name: avp
+
+on: [push, pull_request]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v1
+    - name: Install nasm
+      run: |
+        sudo apt-get install nasm
+    - name: Install vpx
+      env:
+        VPX_TESTS: --disable-unit-tests --disable-examples
+        VPX_INSTALL: --disable-install-docs
+      run: |
+        git clone --depth 1 https://github.com/webmproject/libvpx.git
+        cd libvpx
+        ./configure --enable-pic $VPX_TESTS $VPX_INSTALL --prefix=$HOME/vpx_dir
+        make -j12
+        make install
+    - name: Install opus
+      run: |
+        git clone https://github.com/xiph/opus.git
+        cd opus
+        ./autogen.sh 
+        ./configure --prefix=$HOME/opus_dir
+        make -j12
+        make install
+    - name: Run tests
+      run: |
+        export PKG_CONFIG_PATH=$HOME/vpx_dir/lib/pkgconfig:$PKG_CONFIG_PATH
+        export PKG_CONFIG_PATH=$HOME/opus_dir/lib/pkgconfig:$PKG_CONFIG_PATH
+        export LD_LIBRARY_PATH=$HOME/opus_dir/lib:$LD_LIBRARY_PATH
+        cargo test --all-features --verbose
