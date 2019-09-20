@@ -295,7 +295,7 @@ fn main() {
                 channels: info.map.as_ref().map(|m| m.len() as u8),
                 samples: None,
             };
-            let mut a = audio.open_playback(None, &desired, |spec| {
+            let a = audio.open_playback(None, &desired, |spec| {
                 println!("{:?}", spec); // TODO: wire in resampler when needed
                 CB {
                     r : a_r,
