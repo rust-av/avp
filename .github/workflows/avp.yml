@@ -12,6 +12,10 @@ jobs:
     - name: Install nasm
       run: |
         sudo apt-get install nasm
+    - name: Install sdl2
+      run: |
+        sudo apt-get update
+        sudo apt-get install libsdl2-dev libsdl2-image-dev
     - name: Install vpx
       env:
         VPX_TESTS: --disable-unit-tests --disable-examples
