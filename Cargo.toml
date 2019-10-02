@@ -12,7 +12,7 @@ keywords = ["player","rust-av","sdl2"]
 clap = "2.24.1"
 sdl2 = "0.32"
 av-data = "0.1.0"
-av-codec = "0.1.0"
+av-codec = "0.2.0"
 av-format = "0.1.0"
 libvpx = { version = "0.1.0", git = "https://github.com/rust-av/vpx-rs", features = ["codec-trait"] }
 libopus = { version = "0.1.0", git = "https://github.com/rust-av/opus-rs", features = ["codec-trait"] }
