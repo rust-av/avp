@@ -10,7 +10,7 @@ keywords = ["player","rust-av","sdl2"]
 
 [dependencies]
 clap = "2.24.1"
-sdl2 = "0.32"
+sdl2 = "0.33"
 av-data = "0.2.0"
 av-codec = "0.2.0"
 av-format = "0.2.0"
