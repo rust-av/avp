@@ -1,13 +1,13 @@
 #[macro_use]
 extern crate clap;
 
-extern crate av_data as data;
 extern crate av_codec as codec;
+extern crate av_data as data;
 extern crate av_format as format;
-extern crate matroska;
-extern crate libvpx as vpx;
-extern crate libopus as opus;
 extern crate av_vorbis as vorbis;
+extern crate libopus as opus;
+extern crate libvpx as vpx;
+extern crate matroska;
 
 extern crate sdl2;
 
@@ -15,16 +15,15 @@ use clap::Arg;
 
 use sdl2::pixels::PixelFormatEnum;
 // use sdl2::rect::Rect;
+use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::keyboard::Keycode;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
-use sdl2::{ AudioSubsystem, VideoSubsystem, EventPump };
-use sdl2::audio::{ AudioCallback, AudioSpecDesired };
+use sdl2::{AudioSubsystem, EventPump, VideoSubsystem};
 
-use format::demuxer::*;
 use data::frame::*;
 use data::rational::Rational64;
-
+use format::demuxer::*;
 
 // use matroska::demuxer::MKV_DESC;
 use matroska::demuxer::MkvDemuxer;
@@ -44,7 +43,8 @@ trait NewCanvas {
 
 impl NewCanvas for VideoSubsystem {
     fn new_canvas(&self, w: usize, h: usize, name: &str) -> Canvas<Window> {
-        let window = self.window(name, w as u32, h as u32)
+        let window = self
+            .window(name, w as u32, h as u32)
             .position_centered()
             .opengl()
             .build()
@@ -62,8 +62,9 @@ impl Blit for Canvas<Window> {
         let (w, h) = self.window().size();
         let texture_creator = self.texture_creator();
 
-        let mut texture = texture_creator.create_texture_streaming(
-            PixelFormatEnum::IYUV, w, h).unwrap();
+        let mut texture = texture_creator
+            .create_texture_streaming(PixelFormatEnum::IYUV, w, h)
+            .unwrap();
 
         let y_plane = frame.buf.as_slice(0).unwrap();
         let y_stride = frame.buf.linesize(0).unwrap();
@@ -72,10 +73,11 @@ impl Blit for Canvas<Window> {
         let v_plane = frame.buf.as_slice(2).unwrap();
         let v_stride = frame.buf.linesize(2).unwrap();
 
-        texture.update_yuv(None,
-                           y_plane, y_stride,
-                           u_plane, u_stride,
-                           v_plane, v_stride).unwrap();
+        texture
+            .update_yuv(
+                None, y_plane, y_stride, u_plane, u_stride, v_plane, v_stride,
+            )
+            .unwrap();
 
         self.clear();
         self.copy(&texture, None, None).unwrap();
@@ -93,10 +95,13 @@ impl EventLoop for EventPump {
 
         for event in self.poll_iter() {
             match event {
-                SDLEvent::Quit {..} |
-                    SDLEvent::KeyDown { keycode: Some(Keycode::Escape), .. } => {
-                        return true;
-                },
+                SDLEvent::Quit { .. }
+                | SDLEvent::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => {
+                    return true;
+                }
                 _ => {
                     return false;
                 }
@@ -106,19 +111,18 @@ impl EventLoop for EventPump {
     }
 }
 
-use std::fs::File;
-use format::buffer::AccReader;
 use data::params;
+use format::buffer::AccReader;
+use std::fs::File;
 
-use codec::decoder::Context as DecContext;
-use codec::decoder::Codecs as DecCodecs;
 use codec::common::CodecList;
+use codec::decoder::Codecs as DecCodecs;
+use codec::decoder::Context as DecContext;
 use data::frame::ArcFrame;
 
-
-use vpx::decoder::VP9_DESCR;
 use opus::decoder::OPUS_DESCR;
 use vorbis::decoder::VORBIS_DESCR;
+use vpx::decoder::VP9_DESCR;
 
 use std::collections::HashMap;
 
@@ -139,8 +143,7 @@ impl PlaybackContext {
 
         c.read_headers().expect("Cannot parse the format headers");
 
-        let decoders = DecCodecs::from_list(&[VP9_DESCR, OPUS_DESCR,
-            VORBIS_DESCR]);
+        let decoders = DecCodecs::from_list(&[VP9_DESCR, OPUS_DESCR, VORBIS_DESCR]);
 
         let mut video_info = None;
         let mut audio_info = None;
@@ -157,11 +160,11 @@ impl PlaybackContext {
                     match st.params.kind {
                         Some(params::MediaKind::Video(ref info)) => {
                             video_info = Some(info.clone());
-                        },
+                        }
                         Some(params::MediaKind::Audio(ref info)) => {
                             audio_info = Some(info.clone());
-                        },
-                        _ => {},
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -189,7 +192,7 @@ impl PlaybackContext {
                         println!("Skipping packet at index {}", pkt.stream_index);
                         Ok(None)
                     }
-                },
+                }
                 _ => {
                     println!("Unsupported event {:?}", event);
                     unimplemented!();
@@ -203,8 +206,8 @@ impl PlaybackContext {
     }
 }
 
-use std::thread;
 use std::sync::mpsc;
+use std::thread;
 use std::time;
 
 use data::frame::MediaKind;
@@ -238,7 +241,11 @@ impl AudioCallback for CB {
 
             if {
                 let f = self.f.as_ref().unwrap();
-                let info = if let MediaKind::Audio(ref i) = f.kind { i } else { unreachable!() };
+                let info = if let MediaKind::Audio(ref i) = f.kind {
+                    i
+                } else {
+                    unreachable!()
+                };
                 let samples = info.samples * info.map.len();
                 let data = f.buf.as_slice(0).unwrap();
                 let in_len = samples - self.off;
@@ -246,7 +253,7 @@ impl AudioCallback for CB {
 
                 // println!("Copying {} from {}, {} {:?}", len, in_len, out_len, info);
 
-                &out[off .. off + len].copy_from_slice(&data[self.off .. self.off + len]);
+                &out[off..off + len].copy_from_slice(&data[self.off..self.off + len]);
 
                 self.off += len;
                 off += len;
@@ -267,9 +274,7 @@ fn main() {
         .index(1)
         .multiple(true);
 
-    let m = app_from_crate!()
-        .arg(i)
-        .get_matches();
+    let m = app_from_crate!().arg(i).get_matches();
 
     if let Some(input) = m.value_of("input") {
         let (audio, video, mut event) = sdl_setup();
@@ -295,14 +300,16 @@ fn main() {
                 channels: info.map.as_ref().map(|m| m.len() as u8),
                 samples: None,
             };
-            let a = audio.open_playback(None, &desired, |spec| {
-                println!("{:?}", spec); // TODO: wire in resampler when needed
-                CB {
-                    r : a_r,
-                    f : None,
-                    off : 0,
-                }
-            }).unwrap();
+            let a = audio
+                .open_playback(None, &desired, |spec| {
+                    println!("{:?}", spec); // TODO: wire in resampler when needed
+                    CB {
+                        r: a_r,
+                        f: None,
+                        off: 0,
+                    }
+                })
+                .unwrap();
             a_out = Some(a);
         }
 
@@ -313,7 +320,7 @@ fn main() {
                     match frame.kind {
                         MediaKind::Video(_) => {
                             v_s.send(frame).unwrap(); // TODO: manage the error
-                        },
+                        }
                         MediaKind::Audio(_) => {
                             a_s.send(frame).unwrap();
                         }
@@ -327,8 +334,9 @@ fn main() {
         let mut prev_pts = None;
         let mut now = time::Instant::now();
         while let Ok(frame) = v_r.recv() {
-            let pts = (Rational64::from_integer(frame.t.pts.unwrap() * 1000000000) *
-                frame.t.timebase.unwrap()).to_integer();
+            let pts = (Rational64::from_integer(frame.t.pts.unwrap() * 1000000000)
+                * frame.t.timebase.unwrap())
+            .to_integer();
             // println!("{:?}", pts);
             if let Some(prev) = prev_pts {
                 let elapsed = now.elapsed();
@@ -347,7 +355,7 @@ fn main() {
             match frame.kind {
                 MediaKind::Video(_) => {
                     v_out.blit(&frame);
-                },
+                }
                 _ => unreachable!(),
             }
 
@@ -359,6 +367,5 @@ fn main() {
         // TODO: close once it finished or not?
         while !event.eventloop() {}
     } else {
-
     }
 }
