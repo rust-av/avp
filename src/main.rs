@@ -28,6 +28,11 @@ use format::demuxer::*;
 // use matroska::demuxer::MKV_DESC;
 use matroska::demuxer::MkvDemuxer;
 
+// Since the Rust time-functions `Duration` and `Instant` work with nanoseconds
+// by default, it is much simpler to convert a PTS to nanoseconds,
+// that is why the following constant has been added.
+const ONE_NANOSECOND: i64 = 1000000000;
+
 fn sdl_setup() -> (AudioSubsystem, VideoSubsystem, EventPump) {
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
@@ -334,7 +339,7 @@ fn main() {
         let mut prev_pts = None;
         let mut now = time::Instant::now();
         while let Ok(frame) = v_r.recv() {
-            let pts = (Rational64::from_integer(frame.t.pts.unwrap() * 1000000000)
+            let pts = (Rational64::from_integer(frame.t.pts.unwrap() * ONE_NANOSECOND)
                 * frame.t.timebase.unwrap())
             .to_integer();
             // println!("{:?}", pts);
